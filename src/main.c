@@ -120,8 +120,8 @@ void vcpu_setup_regs(struct vcpu *vcpu)
     memset(&regs, 0, sizeof(regs));
     regs.rip = 0x0000; // start execution at physical address 0x0000
     regs.rflags = 0x2; // set reserved bit 1 as required by x86 architecture
-    regs.rax = 2;
-    regs.rbx = 2;
+    regs.rax = 3;
+    regs.rbx = 4;
     if (ioctl(vcpu->fd, KVM_SET_REGS, &regs) < 0)
     {
         perror("KVM_SET_REGS");
@@ -149,7 +149,7 @@ void vcpu_init(struct vm *vm, struct vcpu *vcpu)
         exit(1);
     }
 
-    // mmap kvm_run struct for this vCPU
+    // mmap kvm_run (shared memory region between the kernel and the user-space vCPU)
     vcpu->kvm_run = mmap(NULL, vcpu_mmap_size, PROT_READ | PROT_WRITE,
                          MAP_SHARED, vcpu->fd, 0);
     if (vcpu->kvm_run == MAP_FAILED)
@@ -160,10 +160,10 @@ void vcpu_init(struct vm *vm, struct vcpu *vcpu)
     vcpu->kvm_run_size = vcpu_mmap_size;
 }
 
+static void handle_io(struct vcpu *vcpu);
+
 int vcpu_run(struct vcpu *vcpu)
 {
-    struct kvm_regs regs;
-
     for (;;)
     {
         // guest runs continuously until exits to the host, e.g., due to a halt instruction or an I/O operation
@@ -177,14 +177,8 @@ int vcpu_run(struct vcpu *vcpu)
         switch (vcpu->kvm_run->exit_reason)
         {
         case KVM_EXIT_IO:
-            if (ioctl(vcpu->fd, KVM_GET_REGS, &regs) < 0)
-            {
-                perror("KVM_GET_REGS");
-                exit(1);
-            }
-            printf("KVM_EXIT_IO: port=0x%x al=0x%llx\n",
-                   vcpu->kvm_run->io.port, regs.rax & 0xff);
-            continue; // TODO: real port emulation in phase 4
+            handle_io(vcpu);
+            continue;
         case KVM_EXIT_HLT:
             printf("KVM_EXIT_HLT\n");
             return 0;
@@ -194,6 +188,32 @@ int vcpu_run(struct vcpu *vcpu)
             exit(1);
         }
     }
+}
+
+static void handle_io(struct vcpu *vcpu)
+{
+    struct kvm_run *kvm_run = vcpu->kvm_run;
+    // our payload only handle 'out' I/O operations (guest write to port)
+    // temporarily treating any 'in' flow as illegal (guest read from port)
+    if (kvm_run->io.direction != KVM_EXIT_IO_OUT)
+    {
+        fprintf(stderr, "Unhandled I/O direction: %d\n", kvm_run->io.direction);
+        exit(1);
+    }
+    if (kvm_run->io.port != 0x3f8) // only handle COM1 port
+    {
+        fprintf(stderr, "Unhandled I/O port: 0x%x\n", kvm_run->io.port);
+        exit(1);
+    }
+    uint8_t *data = (uint8_t *)kvm_run + kvm_run->io.data_offset;
+    for (uint32_t i = 0; i < kvm_run->io.count; i++)
+    {
+        if (kvm_run->io.size <= 1)
+        {
+            putchar(data[i]);
+        }
+    }
+    fflush(stdout);
 }
 
 void vm_cleanup(struct vm *vm)
