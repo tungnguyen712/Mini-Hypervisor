@@ -89,6 +89,9 @@ int vcpu_run(struct vcpu *vcpu)
         case KVM_EXIT_IO:
             handle_io(vcpu);
             continue;
+        case KVM_EXIT_MMIO:
+            handle_mmio(vcpu);
+            continue;
         case KVM_EXIT_HLT:
             printf("KVM_EXIT_HLT\n");
             return 0;

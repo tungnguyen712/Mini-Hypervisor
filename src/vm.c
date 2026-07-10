@@ -88,3 +88,36 @@ void load_payload(struct vm *vm, const void *payload, size_t size)
         exit(1);
     }
 }
+
+void load_payload_from_file(struct vm *vm, const char *path)
+{
+    // open file
+    FILE *file = fopen(path, "rb");
+    if (!file)
+    {
+        perror(path);
+        exit(1);
+    }
+    // move cursor to end to measure size
+    fseek(file, 0, SEEK_END);
+    long size = ftell(file);
+    // reset cursor back to start
+    fseek(file, 0, SEEK_SET);
+
+    if (size < 0 || (size_t)size > vm->mem_size)
+    {
+        fprintf(stderr, "file size (%ld bytes) larger than guest memory (%zu bytes)\n",
+                size, vm->mem_size);
+        fclose(file);
+        exit(1);
+    }
+
+    // read file into memory
+    size_t nread = fread(vm->mem, 1, (size_t)size, file);
+    fclose(file);
+    if (nread != (size_t)size)
+    {
+        fprintf(stderr, "failed to read entire file into guest memory\n");
+        exit(1);
+    }
+}

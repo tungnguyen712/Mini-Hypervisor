@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 
 void handle_io(struct vcpu *vcpu)
 {
@@ -28,4 +29,25 @@ void handle_io(struct vcpu *vcpu)
         }
     }
     fflush(stdout);
+}
+
+void handle_mmio(struct vcpu *vcpu)
+{
+    struct kvm_run *kvm_run = vcpu->kvm_run;
+    if (kvm_run->mmio.is_write)
+    {
+        printf("KVM_EXIT_MMIO: write 0x%02x to guest phys 0x%llx (len %u)\n",
+               kvm_run->mmio.data[0],
+               (unsigned long long)kvm_run->mmio.phys_addr,
+               kvm_run->mmio.len);
+    }
+    else
+    {
+        printf("KVM_EXIT_MMIO: read from guest phys 0x%llx (len %u)\n",
+               (unsigned long long)kvm_run->mmio.phys_addr,
+               kvm_run->mmio.len);
+        // no real device backs this address yet; return zero so the guest
+        // doesn't hang waiting on a response from a device that doesn't exist
+        memset(kvm_run->mmio.data, 0, kvm_run->mmio.len);
+    }
 }

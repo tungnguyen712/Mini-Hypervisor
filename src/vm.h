@@ -14,5 +14,6 @@ struct vm
 void vm_init(struct vm *vm, size_t mem_size);
 void vm_cleanup(struct vm *vm);
 void load_payload(struct vm *vm, const void *payload, size_t size);
+void load_payload_from_file(struct vm *vm, const char *path);
 
 #endif // VM_H
