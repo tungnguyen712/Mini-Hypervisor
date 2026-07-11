@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <linux/kvm.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -22,6 +23,8 @@ void vcpu_setup_regs(struct vcpu *vcpu, uint64_t rip)
     // set code segment to 0, base to 0, so code execution starts at physical address 0x0000
     sregs.cs.base = 0;
     sregs.cs.selector = 0;
+    // set EFER.LME=1 so the guest can activate long mode via CR0.PG
+    sregs.efer |= 0x100;
     // apply sregs changes back to the vCPU
     if (ioctl(vcpu->fd, KVM_SET_SREGS, &sregs) < 0)
     {
@@ -30,11 +33,22 @@ void vcpu_setup_regs(struct vcpu *vcpu, uint64_t rip)
     }
 
     memset(&regs, 0, sizeof(regs));
-    regs.rip = rip;    // start execution at the specified physical address
-    regs.rflags = 0x2; // set reserved bit 1 as required by x86 architecture
+    regs.rip = rip;         // start execution at the specified physical address
+    regs.rbx = rip;         // pass load base to guest: BX = physical address where payload was loaded
+    regs.rsp = rip + 0xFF0; // per-VCPU real-mode stack top, well within the VCPU's own 4KB page
+    regs.rflags = 0x2;      // set reserved bit 1 as required by x86 architecture
     if (ioctl(vcpu->fd, KVM_SET_REGS, &regs) < 0)
     {
         perror("KVM_SET_REGS");
+        exit(1);
+    }
+}
+
+void vcpu_get_sregs(struct vcpu *vcpu, struct kvm_sregs *sregs)
+{
+    if (ioctl(vcpu->fd, KVM_GET_SREGS, sregs) < 0)
+    {
+        perror("KVM_GET_SREGS");
         exit(1);
     }
 }
@@ -93,6 +107,9 @@ int vcpu_run(struct vcpu *vcpu)
         case KVM_EXIT_HLT:
             printf("KVM_EXIT_HLT\n");
             return 0;
+        case KVM_EXIT_SHUTDOWN:
+            fprintf(stderr, "KVM_EXIT_SHUTDOWN (triple fault)\n");
+            return -1;
         default:
             fprintf(stderr, "Unhandled exit reason: %d\n",
                     vcpu->kvm_run->exit_reason);

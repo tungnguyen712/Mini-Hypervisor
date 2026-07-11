@@ -6,6 +6,7 @@ void *vcpu_thread_main(void *arg)
     vcpu_init(a->vm, a->vcpu, a->vcpu_id);
     vcpu_setup_regs(a->vcpu, a->rip);
     vcpu_run(a->vcpu);
+    vcpu_get_sregs(a->vcpu, &a->sregs);
     vcpu_cleanup(a->vcpu);
     return NULL;
 }

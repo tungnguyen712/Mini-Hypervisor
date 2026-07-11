@@ -14,6 +14,7 @@ struct vcpu
 
 void vcpu_setup_regs(struct vcpu *vcpu, uint64_t rip);
 void vcpu_init(struct vm *vm, struct vcpu *vcpu, unsigned long vcpu_id);
+void vcpu_get_sregs(struct vcpu *vcpu, struct kvm_sregs *sregs);
 int vcpu_run(struct vcpu *vcpu);
 void vcpu_cleanup(struct vcpu *vcpu);
 
