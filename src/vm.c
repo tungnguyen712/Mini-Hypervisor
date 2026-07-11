@@ -91,6 +91,11 @@ void load_payload(struct vm *vm, const void *payload, size_t size)
 
 void load_payload_from_file(struct vm *vm, const char *path)
 {
+    load_payload_from_file_at(vm, path, 0);
+}
+
+void load_payload_from_file_at(struct vm *vm, const char *path, size_t offset)
+{
     // open file
     FILE *file = fopen(path, "rb");
     if (!file)
@@ -113,7 +118,7 @@ void load_payload_from_file(struct vm *vm, const char *path)
     }
 
     // read file into memory
-    size_t nread = fread(vm->mem, 1, (size_t)size, file);
+    size_t nread = fread((unsigned char *)vm->mem + offset, 1, (size_t)size, file);
     fclose(file);
     if (nread != (size_t)size)
     {

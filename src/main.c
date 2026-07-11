@@ -1,38 +1,56 @@
 #include "vm.h"
 #include "vcpu.h"
+#include "smp.h"
 #include <stdio.h>
 #include <stdint.h>
+#include <pthread.h>
 
 // only back 640KB conventional memory region as real RAM
 // anything from here up to real-mode's 1MB will trigger KVM_EXIT_MMIO
-#define GUEST_MEM_SIZE 0xA0000
+#define GUEST_MEM_SIZE 0x4000
 
-#define NEAR_ADDR 0x200
-#define NEAR_VAL 0xAA
-#define FAR_ADDR 0x9FFF0
-#define FAR_VAL 0xBB
+#define VCPU0_RIP 0x0000
+#define VCPU1_RIP 0x1000
+#define COUNTER_ADDR 0x2000
+#define LOOP_COUNT 1000
 
 int main()
 {
     struct vm vm;
-    struct vcpu vcpu;
+    struct vcpu vcpu0, vcpu1;
 
     vm_init(&vm, GUEST_MEM_SIZE);
-    load_payload_from_file(&vm, "guest/payloads/payload1.bin");
-    vcpu_init(&vm, &vcpu);
-    vcpu_setup_regs(&vcpu);
-    vcpu_run(&vcpu);
-    uint8_t *mem = (uint8_t *)vm.mem;
-    int near_ok = (mem[NEAR_ADDR] == NEAR_VAL);
-    int far_ok = (mem[FAR_ADDR] == FAR_VAL);
+    load_payload_from_file_at(&vm, "guest/payloads/vcpu_counter.bin", VCPU0_RIP);
+    load_payload_from_file_at(&vm, "guest/payloads/vcpu_counter.bin", VCPU1_RIP);
 
-    if (!near_ok || !far_ok)
+    struct vcpu_thread_arg arg0 = {
+        .vm = &vm,
+        .vcpu = &vcpu0,
+        .vcpu_id = 0,
+        .rip = VCPU0_RIP};
+    struct vcpu_thread_arg arg1 = {
+        .vm = &vm,
+        .vcpu = &vcpu1,
+        .vcpu_id = 1,
+        .rip = VCPU1_RIP};
+
+    pthread_t thread0, thread1;
+    if (pthread_create(&thread0, NULL, vcpu_thread_main, &arg0) != 0)
     {
-        fprintf(stderr, "  near 0x%x = 0x%02x (want 0x%02x)\n", NEAR_ADDR, mem[NEAR_ADDR], NEAR_VAL);
-        fprintf(stderr, "  far  0x%x = 0x%02x (want 0x%02x)\n", FAR_ADDR, mem[FAR_ADDR], FAR_VAL);
+        perror("pthread_create vcpu0");
+    }
+    if (pthread_create(&thread1, NULL, vcpu_thread_main, &arg1) != 0)
+    {
+        perror("pthread_create vcpu1");
     }
 
-    vcpu_cleanup(&vcpu);
+    pthread_join(thread0, NULL);
+    pthread_join(thread1, NULL);
+
+    uint16_t *counter = (uint16_t *)((unsigned char *)vm.mem + COUNTER_ADDR);
+    uint16_t expected = 2 * LOOP_COUNT;
+    printf("Shared counter = %u (expected %u)\n", *counter, expected);
+
     vm_cleanup(&vm);
     return 0;
 }

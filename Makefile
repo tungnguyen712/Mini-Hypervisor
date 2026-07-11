@@ -1,5 +1,5 @@
 CC := gcc
-CFLAGS := -Wall -Wextra -g -std=c11
+CFLAGS := -Wall -Wextra -g -std=c11 -pthread
 NASM := nasm
 SRC := $(wildcard src/*.c)
 OBJ := $(SRC:.c=.o)

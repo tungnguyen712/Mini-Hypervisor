@@ -10,3 +10,4 @@ guest/payloads/*.elf
 .vscode/
 *.swp
 .DS_Store
+docs/

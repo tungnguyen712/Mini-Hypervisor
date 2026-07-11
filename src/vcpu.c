@@ -8,7 +8,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 
-void vcpu_setup_regs(struct vcpu *vcpu)
+void vcpu_setup_regs(struct vcpu *vcpu, uint64_t rip)
 {
     struct kvm_regs regs;
     struct kvm_sregs sregs;
@@ -30,10 +30,8 @@ void vcpu_setup_regs(struct vcpu *vcpu)
     }
 
     memset(&regs, 0, sizeof(regs));
-    regs.rip = 0x0000; // start execution at physical address 0x0000
+    regs.rip = rip;    // start execution at the specified physical address
     regs.rflags = 0x2; // set reserved bit 1 as required by x86 architecture
-    regs.rax = 3;
-    regs.rbx = 4;
     if (ioctl(vcpu->fd, KVM_SET_REGS, &regs) < 0)
     {
         perror("KVM_SET_REGS");
@@ -41,12 +39,12 @@ void vcpu_setup_regs(struct vcpu *vcpu)
     }
 }
 
-void vcpu_init(struct vm *vm, struct vcpu *vcpu)
+void vcpu_init(struct vm *vm, struct vcpu *vcpu, unsigned long vcpu_id)
 {
     int vcpu_mmap_size;
 
     // create a vCPU instance
-    vcpu->fd = ioctl(vm->fd, KVM_CREATE_VCPU, 0);
+    vcpu->fd = ioctl(vm->fd, KVM_CREATE_VCPU, vcpu_id);
     if (vcpu->fd < 0)
     {
         perror("KVM_CREATE_VCPU");
