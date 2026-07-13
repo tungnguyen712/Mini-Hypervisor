@@ -8,6 +8,7 @@
 struct vcpu
 {
     int fd;
+    int vm_fd;
     struct kvm_run *kvm_run;
     int kvm_run_size;
 };
@@ -17,5 +18,8 @@ void vcpu_init(struct vm *vm, struct vcpu *vcpu, unsigned long vcpu_id);
 void vcpu_get_sregs(struct vcpu *vcpu, struct kvm_sregs *sregs);
 int vcpu_run(struct vcpu *vcpu);
 void vcpu_cleanup(struct vcpu *vcpu);
+
+// Configure a VCPU to enter the Linux kernel at the 32-bit protected-mode
+void vcpu_setup_linux32_entry(struct vcpu *vcpu);
 
 #endif // VCPU_H

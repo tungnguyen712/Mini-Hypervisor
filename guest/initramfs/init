@@ -1,0 +1,8 @@
+#!/bin/busybox sh
+/bin/busybox --install -s /bin
+mount -t proc     none /proc
+mount -t sysfs    none /sys
+mount -t devtmpfs none /dev
+# cttyhack: creates a new session and opens /dev/console as the controlling
+# terminal before exec'ing sh, so isatty(0) works and the shell is interactive
+exec cttyhack sh

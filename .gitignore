@@ -6,8 +6,19 @@ mini_hv
 guest/payloads/*.bin
 guest/payloads/*.elf
 
+# Linux kernel image and initramfs staging/output (large binaries, not
+# project source; see README.md for how to obtain/build them).
+# guest/initramfs/init is the actual source and IS tracked.
+bzImage
+initramfs.cpio.gz
+initramfs_build/
+
 # Editor / OS cruft
 .vscode/
 *.swp
 .DS_Store
 docs/
+
+# Debugging session notes (already covered by docs/ above, listed
+# explicitly for clarity)
+docs/serial-console-debug.md

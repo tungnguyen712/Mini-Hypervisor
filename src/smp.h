@@ -11,6 +11,7 @@ struct vcpu_thread_arg
     struct vcpu *vcpu;
     unsigned long vcpu_id;
     uint64_t rip;
+    int use_linux_entry;
     struct kvm_sregs sregs;
 };
 

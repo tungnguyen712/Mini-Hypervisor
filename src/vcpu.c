@@ -1,3 +1,4 @@
+#define _DEFAULT_SOURCE
 #include "vcpu.h"
 #include "io.h"
 
@@ -64,6 +65,33 @@ void vcpu_init(struct vm *vm, struct vcpu *vcpu, unsigned long vcpu_id)
         perror("KVM_CREATE_VCPU");
         exit(1);
     }
+    vcpu->vm_fd = vm->fd;
+
+    // Expose host-supported CPUID leaves to the guest
+    {
+        const int nent = 100;
+        struct kvm_cpuid2 *cpuid = malloc(
+            sizeof(*cpuid) + (size_t)nent * sizeof(cpuid->entries[0]));
+        if (!cpuid)
+        {
+            perror("malloc cpuid");
+            exit(1);
+        }
+        cpuid->nent = nent;
+        if (ioctl(vm->sys_fd, KVM_GET_SUPPORTED_CPUID, cpuid) < 0)
+        {
+            perror("KVM_GET_SUPPORTED_CPUID");
+            free(cpuid);
+            exit(1);
+        }
+        if (ioctl(vcpu->fd, KVM_SET_CPUID2, cpuid) < 0)
+        {
+            perror("KVM_SET_CPUID2");
+            free(cpuid);
+            exit(1);
+        }
+        free(cpuid);
+    }
 
     // get size of kvm_run struct for this vCPU
     vcpu_mmap_size = ioctl(vm->sys_fd, KVM_GET_VCPU_MMAP_SIZE, 0);
@@ -105,8 +133,21 @@ int vcpu_run(struct vcpu *vcpu)
             handle_mmio(vcpu);
             continue;
         case KVM_EXIT_HLT:
-            printf("KVM_EXIT_HLT\n");
-            return 0;
+            // Guest CPU is idle. If COM1 has pending data and the guest has
+            // receive interrupts enabled (IER.RDI), wake up the serial driver;
+            // otherwise sleep and re-run.
+            if (com1_rx_avail() && (com1_ier() & 0x01))
+            {
+                struct kvm_irq_level irq = {.irq = 4, .level = 1};
+                ioctl(vcpu->vm_fd, KVM_IRQ_LINE, &irq);
+                irq.level = 0;
+                ioctl(vcpu->vm_fd, KVM_IRQ_LINE, &irq);
+            }
+            else
+            {
+                usleep(1000);
+            }
+            continue;
         case KVM_EXIT_SHUTDOWN:
             fprintf(stderr, "KVM_EXIT_SHUTDOWN (triple fault)\n");
             return -1;
@@ -122,4 +163,75 @@ void vcpu_cleanup(struct vcpu *vcpu)
 {
     munmap(vcpu->kvm_run, vcpu->kvm_run_size);
     close(vcpu->fd);
+}
+
+// Configure a VCPU for the 32-bit Linux boot protocol entry point.
+void vcpu_setup_linux32_entry(struct vcpu *vcpu)
+{
+    struct kvm_sregs sregs;
+    struct kvm_regs regs;
+
+    if (ioctl(vcpu->fd, KVM_GET_SREGS, &sregs) < 0)
+    {
+        perror("KVM_GET_SREGS");
+        exit(1);
+    }
+
+    sregs.cs.base = 0;
+    sregs.cs.limit = 0xFFFFFFFF;
+    sregs.cs.selector = 0x10;
+    sregs.cs.type = 0xA;
+    sregs.cs.present = 1;
+    sregs.cs.dpl = 0;
+    sregs.cs.db = 1;
+    sregs.cs.s = 1;
+    sregs.cs.l = 0; // 32-bit mode, not 64-bit
+    sregs.cs.g = 1;
+    sregs.cs.avl = 0;
+    sregs.cs.unusable = 0;
+
+    // Flat 32-bit data segment shared by DS, ES, FS, GS, SS.
+    struct kvm_segment data_seg = {
+        .base = 0,
+        .limit = 0xFFFFFFFF,
+        .selector = 0x18,
+        .type = 0x2, // data, read/write
+        .present = 1,
+        .dpl = 0,
+        .db = 1,
+        .s = 1,
+        .l = 0,
+        .g = 1,
+        .avl = 0,
+        .unusable = 0,
+        .padding = 0,
+    };
+    sregs.ds = data_seg;
+    sregs.es = data_seg;
+    sregs.fs = data_seg;
+    sregs.gs = data_seg;
+    sregs.ss = data_seg;
+
+    // Protected mode on; paging and write-protect off.
+    sregs.cr0 = 0x1;
+    sregs.cr4 = 0;
+    sregs.efer = 0;
+
+    if (ioctl(vcpu->fd, KVM_SET_SREGS, &sregs) < 0)
+    {
+        perror("KVM_SET_SREGS");
+        exit(1);
+    }
+
+    memset(&regs, 0, sizeof(regs));
+    regs.rip = LINUX_KERNEL_ADDR; // protected-mode entry
+    regs.rsi = LINUX_BOOT_PARAMS_ADDR;
+    regs.rsp = 0x9000; // temp stack
+    regs.rflags = 0x2; // reserved bit 1 always set
+
+    if (ioctl(vcpu->fd, KVM_SET_REGS, &regs) < 0)
+    {
+        perror("KVM_SET_REGS");
+        exit(1);
+    }
 }
