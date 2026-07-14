@@ -51,6 +51,21 @@ test: tests/test_kvm
 tests/test_kvm: tests/test_kvm.c
 	$(CC) $(CFLAGS) -o $@ $<
 
+tests/test_api_client: tests/test_api_client.c
+	$(CC) $(CFLAGS) -o $@ $<
+
+# Starts a throwaway mini_hv instance on a test socket, runs the API client
+# smoke test against it, and tears the daemon down regardless of outcome.
+# Requires bzImage/initramfs.cpio.gz in the repo root (same precondition as
+# `make run`).
+test-api: $(BIN) tests/test_api_client
+	@sock=/tmp/mini_hv_test_$$$$.sock; \
+	./$(BIN) $$sock & pid=$$!; \
+	trap "kill $$pid 2>/dev/null; rm -f $$sock" EXIT; \
+	for i in $$(seq 1 50); do [ -S $$sock ] && break; sleep 0.1; done; \
+	./tests/test_api_client $$sock; rc=$$?; \
+	exit $$rc
+
 clean:
-	rm -f $(OBJ) $(BIN) tests/test_kvm guest/payloads/*.bin
-	rm -rf $(INITRAMFS_DIR) initramfs.cpio.gz
+	rm -f $(OBJ) $(BIN) tests/test_kvm tests/test_api_client guest/payloads/*.bin *.sock
+	rm -rf $(INITRAMFS_DIR) initramfs.cpio.gz vm-logs

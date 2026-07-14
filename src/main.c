@@ -1,50 +1,28 @@
-#include "vm.h"
-#include "vcpu.h"
-#include "smp.h"
-#include "io.h"
+#include "registry.h"
+#include "server.h"
+
 #include <stdio.h>
-#include <stdint.h>
-#include <pthread.h>
+#include <sys/stat.h>
 
-// 512 MB of guest RAM
-#define GUEST_MEM_SIZE 0x20000000
+#define DEFAULT_SOCK_PATH "mini_hv.sock"
+#define DEFAULT_LOG_DIR "vm-logs"
 
-int main()
+int main(int argc, char **argv)
 {
-    struct vm vm;
-    struct vcpu vcpu0;
-    uint64_t initrd_addr;
-    uint32_t initrd_size;
+    const char *sock_path = (argc > 1) ? argv[1] : DEFAULT_SOCK_PATH;
 
-    vm_init(&vm, GUEST_MEM_SIZE);
+    mkdir(DEFAULT_LOG_DIR, 0755);
 
-    load_kernel_bzimage(&vm, "bzImage");
-    load_initramfs(&vm, "initramfs.cpio.gz", &initrd_addr, &initrd_size);
-    setup_boot_params(&vm, "bzImage",
-                      "console=ttyS0,115200 earlyprintk=serial,ttyS0,115200"
-                      " rdinit=/init nokaslr",
-                      initrd_addr, initrd_size);
+    struct registry reg;
+    registry_init(&reg, DEFAULT_LOG_DIR);
 
-    com1_set_vm_fd(vm.fd);
-    com1_start_input_thread();
+    fprintf(stderr, "mini_hv: listening on %s (per-VM logs in %s/)\n",
+            sock_path, DEFAULT_LOG_DIR);
 
-    struct vcpu_thread_arg arg0 = {
-        .vm = &vm,
-        .vcpu = &vcpu0,
-        .vcpu_id = 0,
-        .rip = 0,
-        .use_linux_entry = 1,
-    };
-
-    pthread_t thread0;
-    if (pthread_create(&thread0, NULL, vcpu_thread_main, &arg0) != 0)
+    if (server_run(sock_path, &reg) != 0)
     {
-        perror("pthread_create vcpu0");
-        vm_cleanup(&vm);
+        fprintf(stderr, "mini_hv: failed to start server on %s\n", sock_path);
         return 1;
     }
-    pthread_join(thread0, NULL);
-
-    vm_cleanup(&vm);
     return 0;
 }

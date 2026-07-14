@@ -5,12 +5,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include <linux/kvm.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 
-void vcpu_setup_regs(struct vcpu *vcpu, uint64_t rip)
+int vcpu_setup_regs(struct vcpu *vcpu, uint64_t rip)
 {
     struct kvm_regs regs;
     struct kvm_sregs sregs;
@@ -19,7 +20,7 @@ void vcpu_setup_regs(struct vcpu *vcpu, uint64_t rip)
     if (ioctl(vcpu->fd, KVM_GET_SREGS, &sregs) < 0)
     {
         perror("KVM_GET_SREGS");
-        exit(1);
+        return -1;
     }
     // set code segment to 0, base to 0, so code execution starts at physical address 0x0000
     sregs.cs.base = 0;
@@ -30,7 +31,7 @@ void vcpu_setup_regs(struct vcpu *vcpu, uint64_t rip)
     if (ioctl(vcpu->fd, KVM_SET_SREGS, &sregs) < 0)
     {
         perror("KVM_SET_SREGS");
-        exit(1);
+        return -1;
     }
 
     memset(&regs, 0, sizeof(regs));
@@ -41,29 +42,33 @@ void vcpu_setup_regs(struct vcpu *vcpu, uint64_t rip)
     if (ioctl(vcpu->fd, KVM_SET_REGS, &regs) < 0)
     {
         perror("KVM_SET_REGS");
-        exit(1);
+        return -1;
     }
+    return 0;
 }
 
-void vcpu_get_sregs(struct vcpu *vcpu, struct kvm_sregs *sregs)
+int vcpu_get_sregs(struct vcpu *vcpu, struct kvm_sregs *sregs)
 {
     if (ioctl(vcpu->fd, KVM_GET_SREGS, sregs) < 0)
     {
         perror("KVM_GET_SREGS");
-        exit(1);
+        return -1;
     }
+    return 0;
 }
 
-void vcpu_init(struct vm *vm, struct vcpu *vcpu, unsigned long vcpu_id)
+int vcpu_init(struct vm *vm, struct vcpu *vcpu, unsigned long vcpu_id)
 {
     int vcpu_mmap_size;
+
+    vcpu->vm = vm;
 
     // create a vCPU instance
     vcpu->fd = ioctl(vm->fd, KVM_CREATE_VCPU, vcpu_id);
     if (vcpu->fd < 0)
     {
         perror("KVM_CREATE_VCPU");
-        exit(1);
+        return -1;
     }
     vcpu->vm_fd = vm->fd;
 
@@ -75,20 +80,23 @@ void vcpu_init(struct vm *vm, struct vcpu *vcpu, unsigned long vcpu_id)
         if (!cpuid)
         {
             perror("malloc cpuid");
-            exit(1);
+            close(vcpu->fd);
+            return -1;
         }
         cpuid->nent = nent;
         if (ioctl(vm->sys_fd, KVM_GET_SUPPORTED_CPUID, cpuid) < 0)
         {
             perror("KVM_GET_SUPPORTED_CPUID");
             free(cpuid);
-            exit(1);
+            close(vcpu->fd);
+            return -1;
         }
         if (ioctl(vcpu->fd, KVM_SET_CPUID2, cpuid) < 0)
         {
             perror("KVM_SET_CPUID2");
             free(cpuid);
-            exit(1);
+            close(vcpu->fd);
+            return -1;
         }
         free(cpuid);
     }
@@ -98,7 +106,8 @@ void vcpu_init(struct vm *vm, struct vcpu *vcpu, unsigned long vcpu_id)
     if (vcpu_mmap_size <= 0)
     {
         perror("KVM_GET_VCPU_MMAP_SIZE");
-        exit(1);
+        close(vcpu->fd);
+        return -1;
     }
 
     // mmap kvm_run (shared memory region between the kernel and the user-space vCPU)
@@ -107,20 +116,25 @@ void vcpu_init(struct vm *vm, struct vcpu *vcpu, unsigned long vcpu_id)
     if (vcpu->kvm_run == MAP_FAILED)
     {
         perror("mmap kvm_run");
-        exit(1);
+        close(vcpu->fd);
+        return -1;
     }
     vcpu->kvm_run_size = vcpu_mmap_size;
+    return 0;
 }
 
 int vcpu_run(struct vcpu *vcpu)
 {
     for (;;)
     {
+        if (atomic_load(&vcpu->vm->stop_requested))
+            return 1;
+
         // guest runs continuously until exits to the host, e.g., due to a halt instruction or an I/O operation
         if (ioctl(vcpu->fd, KVM_RUN, 0) < 0)
         {
             perror("KVM_RUN");
-            exit(1);
+            return -1;
         }
 
         // host inspect exit reason and handle accordingly, e.g., halt, I/O, or other exit reasons
@@ -136,7 +150,7 @@ int vcpu_run(struct vcpu *vcpu)
             // Guest CPU is idle. If COM1 has pending data and the guest has
             // receive interrupts enabled (IER.RDI), wake up the serial driver;
             // otherwise sleep and re-run.
-            if (com1_rx_avail() && (com1_ier() & 0x01))
+            if (com1_rx_avail(vcpu->vm->com1) && (com1_ier(vcpu->vm->com1) & 0x01))
             {
                 struct kvm_irq_level irq = {.irq = 4, .level = 1};
                 ioctl(vcpu->vm_fd, KVM_IRQ_LINE, &irq);
@@ -149,12 +163,12 @@ int vcpu_run(struct vcpu *vcpu)
             }
             continue;
         case KVM_EXIT_SHUTDOWN:
-            fprintf(stderr, "KVM_EXIT_SHUTDOWN (triple fault)\n");
+            fprintf(stderr, "[vm %d] KVM_EXIT_SHUTDOWN (triple fault)\n", vcpu->vm->id);
             return -1;
         default:
-            fprintf(stderr, "Unhandled exit reason: %d\n",
-                    vcpu->kvm_run->exit_reason);
-            exit(1);
+            fprintf(stderr, "[vm %d] Unhandled exit reason: %d\n",
+                    vcpu->vm->id, vcpu->kvm_run->exit_reason);
+            return -1;
         }
     }
 }
@@ -166,7 +180,7 @@ void vcpu_cleanup(struct vcpu *vcpu)
 }
 
 // Configure a VCPU for the 32-bit Linux boot protocol entry point.
-void vcpu_setup_linux32_entry(struct vcpu *vcpu)
+int vcpu_setup_linux32_entry(struct vcpu *vcpu)
 {
     struct kvm_sregs sregs;
     struct kvm_regs regs;
@@ -174,7 +188,7 @@ void vcpu_setup_linux32_entry(struct vcpu *vcpu)
     if (ioctl(vcpu->fd, KVM_GET_SREGS, &sregs) < 0)
     {
         perror("KVM_GET_SREGS");
-        exit(1);
+        return -1;
     }
 
     sregs.cs.base = 0;
@@ -220,7 +234,7 @@ void vcpu_setup_linux32_entry(struct vcpu *vcpu)
     if (ioctl(vcpu->fd, KVM_SET_SREGS, &sregs) < 0)
     {
         perror("KVM_SET_SREGS");
-        exit(1);
+        return -1;
     }
 
     memset(&regs, 0, sizeof(regs));
@@ -232,6 +246,7 @@ void vcpu_setup_linux32_entry(struct vcpu *vcpu)
     if (ioctl(vcpu->fd, KVM_SET_REGS, &regs) < 0)
     {
         perror("KVM_SET_REGS");
-        exit(1);
+        return -1;
     }
+    return 0;
 }

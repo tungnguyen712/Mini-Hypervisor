@@ -2,8 +2,9 @@
 
 A minimal type-2 hypervisor for x86-64 Linux, built directly on the raw
 `/dev/kvm` ioctl API (no libvirt, no QEMU, no device-model framework). It
-boots a real Linux kernel + initramfs to an interactive shell over an
-emulated 16550 UART.
+runs as a long-lived control-plane daemon: create, list, inspect, and
+destroy Linux kernel + initramfs guests over a UNIX socket, with each guest
+boots and runs concurrently under its own vCPU thread(s).
 
 ## What it does
 
@@ -13,13 +14,17 @@ emulated 16550 UART.
   protocol entry point.
 - Handles `KVM_EXIT_IO`, `KVM_EXIT_MMIO`, `KVM_EXIT_HLT`, and
   `KVM_EXIT_SHUTDOWN` by hand.
-- Emulates a 16550 UART (COM1) with real register state (IER/LCR/MCR/SCR,
-  not hardcoded stubs) and interrupt-driven RX and TX — including firing
-  `KVM_IRQ_LINE` asynchronously from a stdin-reader thread, since a halted
-  vCPU under a fully in-kernel irqchip blocks inside the kernel and never
-  returns `KVM_EXIT_HLT` to userspace.
-- Boots an actual Linux `bzImage` + a small busybox initramfs to a live,
-  interactive `ash` shell over the serial console.
+- Emulates a 16550 UART (COM1) per VM, with real register state
+  (IER/LCR/MCR/SCR, not hardcoded stubs) and interrupt-driven TX. Guest
+  serial *output* is captured to a per-VM log file under `vm-logs/`; there
+  is no interactive input/console-attach in this phase (the daemon has no
+  controlling terminal to attach one to).
+- Boots an actual Linux `bzImage` + a small busybox initramfs per VM.
+- A control-plane API server (`src/server.c`) listens on a UNIX domain
+  socket and speaks a small line-based text protocol to create, list,
+  inspect, and destroy VMs. A fixed-size registry (`src/registry.c`) tracks
+  each VM's state, and a per-VM supervisor thread joins that VM's vCPU
+  thread(s) in the background so the API never blocks on any single VM.
 
 ## Requirements
 
@@ -31,12 +36,12 @@ emulated 16550 UART.
 
 ## Setup
 
-Two large binaries are required to run but are **not** tracked in this
-repo (see `.gitignore`): a Linux kernel image (`bzImage`) and a packaged
-initramfs (`initramfs.cpio.gz`).
+At least one kernel image + initramfs pair is needed to boot a guest, but
+neither is tracked in this repo (see `.gitignore`) — a VM's kernel/initramfs
+paths are supplied per-request when you `CREATE` it, not hardcoded.
 
-1. **Kernel image.** Copy any bzImage-format Linux kernel to the repo root
-   as `bzImage`.
+1. **Kernel image.** Any bzImage-format Linux kernel. A copy in the repo
+   root as `bzImage` matches the examples below:
 
    ```sh
    cp /boot/vmlinuz-$(uname -r) bzImage
@@ -56,16 +61,56 @@ make        # builds ./mini_hv (and the guest/payloads/*.bin test payloads)
 make run    # equivalent to: ./mini_hv
 ```
 
-`mini_hv` boots the kernel with `console=ttyS0,115200 rdinit=/init`, so the
-entire boot log and an interactive shell prompt appear directly in your
-terminal. Type normally once you see the `~ #` prompt; input is delivered
-to the guest via IRQ-driven UART emulation, so it responds in
-real time.
+`mini_hv` is a daemon: it binds a UNIX socket (`mini_hv.sock` by default, or
+pass a path as the first argument) and blocks forever, waiting for control-
+plane requests. It prints nothing to the terminal per guest — boot logs and
+console output for each VM are captured to `vm-logs/vm-<id>.log`.
 
-Ctrl+C, job control, and window-size negotiation are not wired up.
+Talk to it with any UNIX-socket client, e.g. `socat`:
+
+```sh
+socat - UNIX-CONNECT:mini_hv.sock
+CREATE kernel=bzImage initramfs=initramfs.cpio.gz
+# OK id=1
+LIST
+# OK count=1
+# id=1 state=running
+STATUS 1
+# OK id=1 state=running kernel=bzImage initramfs=initramfs.cpio.gz disk=-
+DESTROY 1
+# OK id=1 destroyed
+```
+
+### Protocol
+
+Requests are newline-terminated, whitespace-separated commands; a
+connection may send multiple commands in sequence. Paths containing spaces
+are not supported.
+
+| Request | Success | Failure |
+|---|---|---|
+| `CREATE kernel=<path> initramfs=<path> [disk=<path>]` | `OK id=<n>` | `ERR <message>` |
+| `LIST` | `OK count=<n>` + one `id=<id> state=<running\|stopped>` line per VM | — |
+| `STATUS <id>` | `OK id=<id> state=<...> kernel=<path> initramfs=<path> disk=<path-or-'-'>` | `ERR no such vm: <id>` |
+| `DESTROY <id>` | `OK id=<id> destroyed` | `ERR no such vm: <id>` |
+
+`disk=` is accepted and reported back by `STATUS` but not yet used to boot
+anything (no virtio/disk device model exists yet — see the project's
+roadmap). Unknown `key=value` fields on `CREATE` are ignored.
+
+### Known limitations
+
+- No interactive console attach — guest serial output only goes to
+  `vm-logs/vm-<id>.log`.
+- `unlink()`ing the socket path on startup is unconditional, so running two
+  daemons against the same socket path will race.
+- A VM that stops on its own (guest triple-fault, unhandled exit) stays
+  allocated until an explicit `DESTROY` reclaims its registry slot.
 
 ## Tests
 
 ```sh
-make test  # basic /dev/kvm capability check (API version, extensions)
+make test      # basic /dev/kvm capability check (API version, extensions)
+make test-api  # starts a throwaway daemon and exercises CREATE/LIST/STATUS/
+               # DESTROY over its socket (requires bzImage/initramfs.cpio.gz)
 ```

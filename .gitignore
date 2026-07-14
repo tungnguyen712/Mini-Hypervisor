@@ -1,6 +1,11 @@
 # Build artifacts
 *.o
 mini_hv
+tests/test_api_client
+
+# Control-plane daemon runtime state (socket + per-VM serial logs)
+*.sock
+vm-logs/
 
 # Guest payload binaries (keep source, not build output)
 guest/payloads/*.bin

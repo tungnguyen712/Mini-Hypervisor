@@ -13,6 +13,7 @@ struct vcpu_thread_arg
     uint64_t rip;
     int use_linux_entry;
     struct kvm_sregs sregs;
+    int result; // set by vcpu_thread_main: 1 = stopped by request, -1 = error
 };
 
 void *vcpu_thread_main(void *arg);
