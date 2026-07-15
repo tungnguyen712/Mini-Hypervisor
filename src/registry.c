@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdatomic.h>
+#include <signal.h>
 
 #define VM_MAX_VCPUS 1
 
@@ -32,7 +33,12 @@ static void *supervisor_main(void *arg)
             .use_linux_entry = 1,
         };
         if (pthread_create(&threads[started], NULL, vcpu_thread_main, &targs[started]) != 0)
-            break; // couldn't start this one; only join what actually started
+            break;
+        if (started == 0)
+        {
+            slot->vcpu_tid = threads[0];
+            slot->vcpu_tid_valid = 1;
+        }
     }
 
     // wait for all vcpu threads to finish
@@ -216,6 +222,8 @@ int registry_destroy_vm(struct registry *reg, int id)
     pthread_mutex_unlock(&reg->lock);
 
     atomic_store(&slot->vm.stop_requested, 1);
+    if (slot->vcpu_tid_valid)
+        pthread_kill(slot->vcpu_tid, SIGUSR1);
     pthread_join(slot->supervisor_thread, NULL);
 
     vm_cleanup(&slot->vm);

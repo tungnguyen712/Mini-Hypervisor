@@ -5,7 +5,7 @@
 #include <stdint.h>
 #include <stdatomic.h>
 
-struct com1_device; // full definition in io.h; vm.h only needs a pointer
+struct com1_device;
 
 struct vm
 {
@@ -14,9 +14,9 @@ struct vm
     void *mem;
     size_t mem_size;
 
-    int id;                    // registry-assigned id, for logging/diagnostics
-    struct com1_device *com1;  // per-VM UART device
-    atomic_int stop_requested; // set by registry_destroy_vm; polled in vcpu_run()
+    int id;
+    struct com1_device *com1; // per-VM UART device
+    atomic_int stop_requested;
 };
 
 // Per-VM configuration supplied by the control-plane API (replaces the

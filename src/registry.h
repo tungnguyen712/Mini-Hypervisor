@@ -30,6 +30,8 @@ struct vm_slot
     char last_error[128];
     pthread_mutex_t state_mutex;
     pthread_t supervisor_thread;
+    pthread_t vcpu_tid;
+    int vcpu_tid_valid;
 };
 
 struct registry

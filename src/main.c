@@ -2,7 +2,10 @@
 #include "server.h"
 
 #include <stdio.h>
+#include <signal.h>
 #include <sys/stat.h>
+
+static void noop_handler(int sig) { (void)sig; }
 
 #define DEFAULT_SOCK_PATH "mini_hv.sock"
 #define DEFAULT_LOG_DIR "vm-logs"
@@ -10,6 +13,10 @@
 int main(int argc, char **argv)
 {
     const char *sock_path = (argc > 1) ? argv[1] : DEFAULT_SOCK_PATH;
+
+    struct sigaction sa = { .sa_handler = noop_handler };
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGUSR1, &sa, NULL);
 
     mkdir(DEFAULT_LOG_DIR, 0755);
 

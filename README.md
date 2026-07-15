@@ -61,9 +61,8 @@ make        # builds ./mini_hv (and the guest/payloads/*.bin test payloads)
 make run    # equivalent to: ./mini_hv
 ```
 
-`mini_hv` is a daemon: it binds a UNIX socket (`mini_hv.sock` by default, or
-pass a path as the first argument) and blocks forever, waiting for control-
-plane requests. It prints nothing to the terminal per guest — boot logs and
+`mini_hv` is a daemon: it binds a UNIX socket and blocks forever, waiting for control-
+plane requests. It prints nothing to the terminal per guest, boot logs and
 console output for each VM are captured to `vm-logs/vm-<id>.log`.
 
 Talk to it with any UNIX-socket client, e.g. `socat`:
@@ -80,32 +79,6 @@ STATUS 1
 DESTROY 1
 # OK id=1 destroyed
 ```
-
-### Protocol
-
-Requests are newline-terminated, whitespace-separated commands; a
-connection may send multiple commands in sequence. Paths containing spaces
-are not supported.
-
-| Request | Success | Failure |
-|---|---|---|
-| `CREATE kernel=<path> initramfs=<path> [disk=<path>]` | `OK id=<n>` | `ERR <message>` |
-| `LIST` | `OK count=<n>` + one `id=<id> state=<running\|stopped>` line per VM | — |
-| `STATUS <id>` | `OK id=<id> state=<...> kernel=<path> initramfs=<path> disk=<path-or-'-'>` | `ERR no such vm: <id>` |
-| `DESTROY <id>` | `OK id=<id> destroyed` | `ERR no such vm: <id>` |
-
-`disk=` is accepted and reported back by `STATUS` but not yet used to boot
-anything (no virtio/disk device model exists yet — see the project's
-roadmap). Unknown `key=value` fields on `CREATE` are ignored.
-
-### Known limitations
-
-- No interactive console attach — guest serial output only goes to
-  `vm-logs/vm-<id>.log`.
-- `unlink()`ing the socket path on startup is unconditional, so running two
-  daemons against the same socket path will race.
-- A VM that stops on its own (guest triple-fault, unhandled exit) stays
-  allocated until an explicit `DESTROY` reclaims its registry slot.
 
 ## Tests
 

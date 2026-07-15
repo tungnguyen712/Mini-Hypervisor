@@ -26,8 +26,6 @@ guest: $(GUEST_BIN)
 guest/payloads/%.bin: guest/payloads/%.asm
 	$(NASM) -f bin -o $@ $<
 
-# Rebuilds initramfs_build/ from the tracked init
-# Re-run whenever guest/initramfs/init changes.
 initramfs: guest/initramfs/init
 	@if [ -z "$(BUSYBOX)" ]; then \
 		echo "busybox not found on PATH; install busybox-static (apt install busybox-static)"; \
@@ -54,10 +52,6 @@ tests/test_kvm: tests/test_kvm.c
 tests/test_api_client: tests/test_api_client.c
 	$(CC) $(CFLAGS) -o $@ $<
 
-# Starts a throwaway mini_hv instance on a test socket, runs the API client
-# smoke test against it, and tears the daemon down regardless of outcome.
-# Requires bzImage/initramfs.cpio.gz in the repo root (same precondition as
-# `make run`).
 test-api: $(BIN) tests/test_api_client
 	@sock=/tmp/mini_hv_test_$$$$.sock; \
 	./$(BIN) $$sock & pid=$$!; \
