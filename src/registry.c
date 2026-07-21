@@ -84,8 +84,18 @@ static int find_ready_slot_by_id_locked(struct registry *reg, int id)
     return -1;
 }
 
+static int find_owned_slot_by_id_locked(struct registry *reg, int id, const char *owner)
+{
+    int idx = find_ready_slot_by_id_locked(reg, id);
+    if (idx < 0)
+        return -1;
+    if (owner && strcmp(reg->slots[idx].owner, owner) != 0)
+        return -1;
+    return idx;
+}
+
 int registry_create_vm(struct registry *reg, const struct vm_config *cfg,
-                       char *err_buf, size_t err_buf_len)
+                       const char *owner, char *err_buf, size_t err_buf_len)
 {
     pthread_mutex_lock(&reg->lock);
     // find and reserve 1st empty slot
@@ -110,6 +120,7 @@ int registry_create_vm(struct registry *reg, const struct vm_config *cfg,
     memset(&slot->vm, 0, sizeof(slot->vm));
     slot->config = *cfg;
     slot->id = reg->next_id++;
+    snprintf(slot->owner, sizeof(slot->owner), "%s", owner ? owner : "");
     slot->state = VM_STATE_STOPPED;
     slot->last_exit_ok = 1;
     slot->last_error[0] = '\0';
@@ -215,12 +226,12 @@ int registry_create_vm(struct registry *reg, const struct vm_config *cfg,
     return id;
 }
 
-int registry_status(struct registry *reg, int id, enum vm_state *out_state,
-                    struct vm_config *out_cfg, char *net_ifname_out,
-                    size_t net_ifname_len)
+int registry_status(struct registry *reg, int id, const char *owner,
+                    enum vm_state *out_state, struct vm_config *out_cfg,
+                    char *net_ifname_out, size_t net_ifname_len)
 {
     pthread_mutex_lock(&reg->lock);
-    int idx = find_ready_slot_by_id_locked(reg, id);
+    int idx = find_owned_slot_by_id_locked(reg, id, owner);
     if (idx < 0)
     {
         pthread_mutex_unlock(&reg->lock);
@@ -240,7 +251,7 @@ int registry_status(struct registry *reg, int id, enum vm_state *out_state,
     return 0;
 }
 
-int registry_list(struct registry *reg, struct vm_list_entry *out, int max)
+int registry_list(struct registry *reg, const char *owner, struct vm_list_entry *out, int max)
 {
     pthread_mutex_lock(&reg->lock);
     int count = 0;
@@ -248,6 +259,8 @@ int registry_list(struct registry *reg, struct vm_list_entry *out, int max)
     {
         struct vm_slot *slot = &reg->slots[i];
         if (!slot->in_use || !slot->ready)
+            continue;
+        if (owner && strcmp(slot->owner, owner) != 0)
             continue;
         pthread_mutex_lock(&slot->state_mutex);
         out[count].id = slot->id;
@@ -259,10 +272,10 @@ int registry_list(struct registry *reg, struct vm_list_entry *out, int max)
     return count;
 }
 
-int registry_destroy_vm(struct registry *reg, int id)
+int registry_destroy_vm(struct registry *reg, int id, const char *owner)
 {
     pthread_mutex_lock(&reg->lock);
-    int idx = find_ready_slot_by_id_locked(reg, id);
+    int idx = find_owned_slot_by_id_locked(reg, id, owner);
     if (idx < 0)
     {
         pthread_mutex_unlock(&reg->lock);
@@ -300,11 +313,39 @@ int registry_destroy_vm(struct registry *reg, int id)
     return 0;
 }
 
-int registry_add_forward(struct registry *reg, int id, int host_port, int guest_port,
+// True if any *other* slot already has host_port actively forwarded.
+// Without this check, two different tenants' FORWARD calls for the same
+// host_port would both succeed and both insert a DNAT rule into the same
+// iptables chain - traffic would go to whichever rule iptables matches
+// first, letting one tenant silently hijack another's forwarded port.
+// Caller must hold reg->lock.
+static int host_port_taken_by_other_locked(struct registry *reg, int self_idx, int host_port)
+{
+    for (int i = 0; i < REGISTRY_MAX_VMS; i++)
+    {
+        if (i == self_idx || !reg->slots[i].in_use)
+            continue;
+        for (int j = 0; j < REGISTRY_MAX_FORWARDS; j++)
+        {
+            if (reg->slots[i].forwards[j].active && reg->slots[i].forwards[j].host_port == host_port)
+                return 1;
+        }
+    }
+    return 0;
+}
+
+int registry_add_forward(struct registry *reg, int id, const char *owner,
+                         int host_port, int guest_port,
                          char *err_buf, size_t err_buf_len)
 {
+    if (host_port < 1 || host_port > 65535 || guest_port < 1 || guest_port > 65535)
+    {
+        snprintf(err_buf, err_buf_len, "ports must be in 1..65535");
+        return -1;
+    }
+
     pthread_mutex_lock(&reg->lock);
-    int idx = find_ready_slot_by_id_locked(reg, id);
+    int idx = find_owned_slot_by_id_locked(reg, id, owner);
     if (idx < 0)
     {
         pthread_mutex_unlock(&reg->lock);
@@ -316,6 +357,12 @@ int registry_add_forward(struct registry *reg, int id, int host_port, int guest_
     {
         pthread_mutex_unlock(&reg->lock);
         snprintf(err_buf, err_buf_len, "vm %d has no network device", id);
+        return -1;
+    }
+    if (host_port_taken_by_other_locked(reg, idx, host_port))
+    {
+        pthread_mutex_unlock(&reg->lock);
+        snprintf(err_buf, err_buf_len, "host_port %d already forwarded to a different vm", host_port);
         return -1;
     }
     int slot_i = -1;
@@ -334,27 +381,32 @@ int registry_add_forward(struct registry *reg, int id, int host_port, int guest_
                  id, REGISTRY_MAX_FORWARDS);
         return -1;
     }
-    pthread_mutex_unlock(&reg->lock);
-
-    if (tap_add_forward(id, host_port, guest_port) != 0)
-    {
-        snprintf(err_buf, err_buf_len, "iptables rule setup failed");
-        return -1;
-    }
-
-    pthread_mutex_lock(&reg->lock);
+    // Reserve the host_port under the lock (before the slow iptables call
+    // runs unlocked) so a concurrent FORWARD for the same host_port on a
+    // different vm sees it as taken via host_port_taken_by_other_locked -
+    // otherwise two racing calls could both pass the collision check above
+    // and both end up inserting a DNAT rule for the same host_port.
     slot->forwards[slot_i].active = 1;
     slot->forwards[slot_i].host_port = host_port;
     slot->forwards[slot_i].guest_port = guest_port;
     pthread_mutex_unlock(&reg->lock);
+
+    if (tap_add_forward(id, host_port, guest_port) != 0)
+    {
+        pthread_mutex_lock(&reg->lock);
+        slot->forwards[slot_i].active = 0;
+        pthread_mutex_unlock(&reg->lock);
+        snprintf(err_buf, err_buf_len, "iptables rule setup failed");
+        return -1;
+    }
     return 0;
 }
 
-int registry_remove_forward(struct registry *reg, int id, int host_port,
-                            char *err_buf, size_t err_buf_len)
+int registry_remove_forward(struct registry *reg, int id, const char *owner,
+                            int host_port, char *err_buf, size_t err_buf_len)
 {
     pthread_mutex_lock(&reg->lock);
-    int idx = find_ready_slot_by_id_locked(reg, id);
+    int idx = find_owned_slot_by_id_locked(reg, id, owner);
     if (idx < 0)
     {
         pthread_mutex_unlock(&reg->lock);

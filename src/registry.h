@@ -32,6 +32,7 @@ struct vm_slot
     int in_use;
     int ready;
     int id;
+    char owner[64]; // set once at CREATE, never mutated after
     // VM instance and configuration
     struct vm vm;
     struct vm_config config;
@@ -61,22 +62,29 @@ struct registry
 
 void registry_init(struct registry *reg, const char *log_dir);
 
+// owner is the authenticated caller's identity (from AUTH); the created VM
+// is recorded as belonging to it and every lookup below is scoped to it.
 int registry_create_vm(struct registry *reg, const struct vm_config *cfg,
-                       char *err_buf, size_t err_buf_len);
+                       const char *owner, char *err_buf, size_t err_buf_len);
 
 // Look up a VM by id -> check VM status and retrieve its configuration.
-int registry_status(struct registry *reg, int id, enum vm_state *out_state,
-                    struct vm_config *out_cfg, char *net_ifname_out,
-                    size_t net_ifname_len);
+// Fails (as if the VM didn't exist) if it belongs to a different owner.
+int registry_status(struct registry *reg, int id, const char *owner,
+                    enum vm_state *out_state, struct vm_config *out_cfg,
+                    char *net_ifname_out, size_t net_ifname_len);
 
-// return all public VMs up to max entries
-int registry_list(struct registry *reg, struct vm_list_entry *out, int max);
-int registry_destroy_vm(struct registry *reg, int id);
+// return the calling owner's VMs, up to max entries
+int registry_list(struct registry *reg, const char *owner, struct vm_list_entry *out, int max);
+int registry_destroy_vm(struct registry *reg, int id, const char *owner);
 
-// Add/remove a port forwarding
-int registry_add_forward(struct registry *reg, int id, int host_port, int guest_port,
+// Add/remove a port forwarding, also rejects host_port
+// values already forwarded to any *other* VM (regardless of owner) to
+// prevent one tenant's FORWARD from hijacking traffic another
+// tenant's forward is already claiming.
+int registry_add_forward(struct registry *reg, int id, const char *owner,
+                         int host_port, int guest_port,
                          char *err_buf, size_t err_buf_len);
-int registry_remove_forward(struct registry *reg, int id, int host_port,
-                            char *err_buf, size_t err_buf_len);
+int registry_remove_forward(struct registry *reg, int id, const char *owner,
+                            int host_port, char *err_buf, size_t err_buf_len);
 
 #endif // REGISTRY_H

@@ -1,11 +1,15 @@
 # Build artifacts
 *.o
 mini_hv
+mhv-token
 tests/test_api_client
 
 # Control-plane daemon runtime state (socket + per-VM serial logs)
 *.sock
 vm-logs/
+
+# Auth token files: live credentials, never commit these.
+*.tokens
 
 # Guest payload binaries (keep source, not build output)
 guest/payloads/*.bin

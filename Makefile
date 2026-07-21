@@ -11,15 +11,18 @@ GUEST_BIN := $(GUEST_ASM:.asm=.bin)
 INITRAMFS_DIR := initramfs_build
 BUSYBOX := $(shell command -v busybox 2>/dev/null)
 
-.PHONY: all guest initramfs run test clean
+.PHONY: all guest initramfs run test test-api clean
 
-all: $(BIN) guest
+all: $(BIN) guest mhv-token
 
 $(BIN): $(OBJ)
 	$(CC) $(CFLAGS) -o $@ $^
 
 src/%.o: src/%.c
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+mhv-token: tools/mhv-token.c
+	$(CC) $(CFLAGS) -o $@ $<
 
 guest: $(GUEST_BIN)
 
@@ -41,7 +44,9 @@ initramfs: guest/initramfs/init
 	cd $(INITRAMFS_DIR) && find . | cpio -o -H newc 2>/dev/null | gzip > ../initramfs.cpio.gz
 
 run: all
-	./$(BIN)
+	@[ -f mini_hv.tokens ] || { ./mhv-token mini_hv.tokens dev >/dev/null; \
+		echo "generated mini_hv.tokens (owner=dev) for local runs - see README for provisioning more tenants"; }
+	./$(BIN) --tokens mini_hv.tokens
 
 test: tests/test_kvm
 	./tests/test_kvm
@@ -52,14 +57,17 @@ tests/test_kvm: tests/test_kvm.c
 tests/test_api_client: tests/test_api_client.c
 	$(CC) $(CFLAGS) -o $@ $<
 
-test-api: $(BIN) tests/test_api_client
+test-api: $(BIN) mhv-token tests/test_api_client
 	@sock=/tmp/mini_hv_test_$$$$.sock; \
-	./$(BIN) $$sock & pid=$$!; \
-	trap "kill $$pid 2>/dev/null; rm -f $$sock" EXIT; \
+	tokens=/tmp/mini_hv_test_$$$$.tokens; \
+	token_a=$$(./mhv-token $$tokens alice); \
+	token_b=$$(./mhv-token $$tokens bob); \
+	./$(BIN) --tokens $$tokens --images-dir . $$sock & pid=$$!; \
+	trap "kill $$pid 2>/dev/null; rm -f $$sock $$tokens" EXIT; \
 	for i in $$(seq 1 50); do [ -S $$sock ] && break; sleep 0.1; done; \
-	./tests/test_api_client $$sock; rc=$$?; \
+	./tests/test_api_client $$sock "$$token_a" "$$token_b"; rc=$$?; \
 	exit $$rc
 
 clean:
-	rm -f $(OBJ) $(BIN) tests/test_kvm tests/test_api_client guest/payloads/*.bin *.sock
+	rm -f $(OBJ) $(BIN) mhv-token tests/test_kvm tests/test_api_client guest/payloads/*.bin *.sock
 	rm -rf $(INITRAMFS_DIR) initramfs.cpio.gz vm-logs
