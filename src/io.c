@@ -1,4 +1,5 @@
 #include "io.h"
+#include "virtio_net.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,8 +46,7 @@ void com1_destroy(struct com1_device *dev)
     free(dev);
 }
 
-// Pulse IRQ 4. Safe to call from any thread: with an in-kernel irqchip,
-// KVM_IRQ_LINE wakes a vCPU that's blocked inside the kernel on HLT.
+// Pulse IRQ 4, wakes a vCPU that's blocked inside the kernel on HLT.
 static void com1_fire_irq(struct com1_device *dev)
 {
     struct kvm_irq_level irq = {.irq = 4, .level = 1};
@@ -63,8 +63,8 @@ int com1_rx_avail(struct com1_device *dev)
     pthread_mutex_unlock(&dev->rx_mutex);
     return avail;
 }
-
-static uint8_t rx_get_locked(struct com1_device *dev) // assume caller must hold dev->rx_mutex
+// assume caller must hold dev->rx_mutex
+static uint8_t rx_get_locked(struct com1_device *dev)
 {
     uint8_t byte = dev->rx_buf[dev->rx_tail];
     dev->rx_tail = (dev->rx_tail + 1) % COM1_RX_BUF_SIZE;
@@ -245,6 +245,7 @@ void handle_mmio(struct vcpu *vcpu)
 {
     struct kvm_run *kvm_run = vcpu->kvm_run;
 
+    // ignore APIC MMIO region for now
     if (kvm_run->mmio.phys_addr >= 0xfee00000ULL &&
         kvm_run->mmio.phys_addr <= 0xfee00fffULL)
     {
@@ -253,7 +254,20 @@ void handle_mmio(struct vcpu *vcpu)
         return;
     }
 
+    // pass access to virtio network device
+    if (vcpu->vm->net != NULL &&
+        kvm_run->mmio.phys_addr >= VIRTIO_NET_MMIO_BASE &&
+        kvm_run->mmio.phys_addr < VIRTIO_NET_MMIO_BASE + VIRTIO_NET_MMIO_SIZE)
+    {
+        virtio_net_mmio_access(vcpu->vm->net,
+                               kvm_run->mmio.phys_addr - VIRTIO_NET_MMIO_BASE,
+                               kvm_run->mmio.data, kvm_run->mmio.len,
+                               kvm_run->mmio.is_write);
+        return;
+    }
+
     pthread_mutex_lock(&mmio_log_lock);
+    // unknown mmio write or read
     if (kvm_run->mmio.is_write)
     {
         printf("[vm %d] KVM_EXIT_MMIO: write 0x%02x to guest phys 0x%llx (len %u)\n",
@@ -268,8 +282,6 @@ void handle_mmio(struct vcpu *vcpu)
                vcpu->vm->id,
                (unsigned long long)kvm_run->mmio.phys_addr,
                kvm_run->mmio.len);
-        // no real device backs this address yet; return zero so the guest
-        // doesn't hang waiting on a response from a device that doesn't exist
         memset(kvm_run->mmio.data, 0, kvm_run->mmio.len);
     }
     pthread_mutex_unlock(&mmio_log_lock);

@@ -10,7 +10,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <pthread.h>
- 
+
 #define LINE_MAX_LEN 1024
 #define RESP_MAX_LEN 4096
 
@@ -44,7 +44,6 @@ static int write_all(int fd, const char *buf, size_t len)
     }
     return 0;
 }
-
 
 static int read_line(int fd, char *buf, size_t bufsize)
 {
@@ -129,7 +128,7 @@ static void handle_list(struct registry *reg, char *resp, size_t resp_size)
     for (int i = 0; i < count && off < (int)resp_size; i++)
     {
         off += snprintf(resp + off, resp_size - (size_t)off, "id=%d state=%s\n",
-                         entries[i].id, state_name(entries[i].state));
+                        entries[i].id, state_name(entries[i].state));
     }
 }
 
@@ -138,14 +137,61 @@ static void handle_status(struct registry *reg, const char *args, char *resp, si
     int id = atoi(args);
     enum vm_state state;
     struct vm_config cfg;
-    if (registry_status(reg, id, &state, &cfg) != 0)
+    char net_ifname[16];
+    if (registry_status(reg, id, &state, &cfg, net_ifname, sizeof(net_ifname)) != 0)
     {
         snprintf(resp, resp_size, "ERR no such vm: %d\n", id);
         return;
     }
-    snprintf(resp, resp_size, "OK id=%d state=%s kernel=%s initramfs=%s disk=%s\n",
+    snprintf(resp, resp_size, "OK id=%d state=%s kernel=%s initramfs=%s disk=%s net=%s\n",
              id, state_name(state), cfg.kernel_path, cfg.initramfs_path,
-             cfg.disk_path[0] ? cfg.disk_path : "-");
+             cfg.disk_path[0] ? cfg.disk_path : "-",
+             net_ifname[0] ? net_ifname : "-");
+}
+
+static void handle_forward(struct registry *reg, char *args, char *resp, size_t resp_size)
+{
+    // split args into id and host_port/guest_port
+    char *saveptr = NULL;
+    char *id_s = strtok_r(args, " \t", &saveptr);
+    char *host_port_s = strtok_r(NULL, " \t", &saveptr);
+    char *guest_port_s = strtok_r(NULL, " \t", &saveptr);
+    if (!id_s || !host_port_s || !guest_port_s)
+    {
+        snprintf(resp, resp_size, "ERR usage: FORWARD <id> <host_port> <guest_port>\n");
+        return;
+    }
+    int id = atoi(id_s);
+    int host_port = atoi(host_port_s);
+    int guest_port = atoi(guest_port_s);
+
+    char err_buf[128];
+    if (registry_add_forward(reg, id, host_port, guest_port, err_buf, sizeof(err_buf)) != 0)
+        snprintf(resp, resp_size, "ERR %s\n", err_buf);
+    else
+        snprintf(resp, resp_size, "OK forwarded host_port=%d -> vm=%d guest_port=%d\n",
+                 host_port, id, guest_port);
+}
+
+static void handle_unforward(struct registry *reg, char *args, char *resp, size_t resp_size)
+{
+    // split args into id and host_port
+    char *saveptr = NULL;
+    char *id_s = strtok_r(args, " \t", &saveptr);
+    char *host_port_s = strtok_r(NULL, " \t", &saveptr);
+    if (!id_s || !host_port_s)
+    {
+        snprintf(resp, resp_size, "ERR usage: UNFORWARD <id> <host_port>\n");
+        return;
+    }
+    int id = atoi(id_s);
+    int host_port = atoi(host_port_s);
+
+    char err_buf[128];
+    if (registry_remove_forward(reg, id, host_port, err_buf, sizeof(err_buf)) != 0)
+        snprintf(resp, resp_size, "ERR %s\n", err_buf);
+    else
+        snprintf(resp, resp_size, "OK unforwarded host_port=%d\n", host_port);
 }
 
 static void handle_destroy(struct registry *reg, const char *args, char *resp, size_t resp_size)
@@ -175,6 +221,10 @@ static void handle_command(struct registry *reg, char *line, char *resp, size_t 
         handle_status(reg, rest ? rest : "", resp, resp_size);
     else if (strcmp(cmd, "DESTROY") == 0)
         handle_destroy(reg, rest ? rest : "", resp, resp_size);
+    else if (strcmp(cmd, "FORWARD") == 0)
+        handle_forward(reg, rest ? rest : "", resp, resp_size);
+    else if (strcmp(cmd, "UNFORWARD") == 0)
+        handle_unforward(reg, rest ? rest : "", resp, resp_size);
     else
         snprintf(resp, resp_size, "ERR unknown command: %s\n", cmd);
 }

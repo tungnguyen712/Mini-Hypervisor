@@ -1,5 +1,6 @@
 #include "registry.h"
 #include "server.h"
+#include "tap.h"
 
 #include <stdio.h>
 #include <signal.h>
@@ -8,24 +9,31 @@
 static void noop_handler(int sig) { (void)sig; }
 
 #define DEFAULT_SOCK_PATH "mini_hv.sock"
-#define DEFAULT_LOG_DIR "vm-logs"
+#define DEFAULT_LOG_DIR "vm-logs" // per-vm logs directory
 
 int main(int argc, char **argv)
 {
     const char *sock_path = (argc > 1) ? argv[1] : DEFAULT_SOCK_PATH;
 
-    struct sigaction sa = { .sa_handler = noop_handler };
+    struct sigaction sa = {.sa_handler = noop_handler};
     sigemptyset(&sa.sa_mask);
     sigaction(SIGUSR1, &sa, NULL);
 
     mkdir(DEFAULT_LOG_DIR, 0755);
 
+    // config networking setup for whole daemon
+    if (tap_ensure_nat() != 0)
+        fprintf(stderr, "mini_hv: NAT setup failed; guests will have no network"
+                        " reachability beyond their own tap link\n");
+
+    // init registry
     struct registry reg;
     registry_init(&reg, DEFAULT_LOG_DIR);
 
     fprintf(stderr, "mini_hv: listening on %s (per-VM logs in %s/)\n",
             sock_path, DEFAULT_LOG_DIR);
 
+    // start server loop
     if (server_run(sock_path, &reg) != 0)
     {
         fprintf(stderr, "mini_hv: failed to start server on %s\n", sock_path);

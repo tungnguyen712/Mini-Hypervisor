@@ -1,5 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "vm.h"
+#include "tap.h"
+#include "virtio_net.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -362,10 +364,11 @@ int setup_boot_params(struct vm *vm, const char *bzimage_path,
 
 #define VM_SETUP_DEFAULT_MEM_SIZE 0x20000000 // 512 MB
 
-int vm_setup(struct vm *vm, const struct vm_config *cfg)
+int vm_setup(struct vm *vm, int id, const struct vm_config *cfg)
 {
     if (vm_init(vm, VM_SETUP_DEFAULT_MEM_SIZE) != 0)
         return -1;
+    vm->id = id; // must be set after vm_init's memset, not before
 
     if (load_kernel_bzimage(vm, cfg->kernel_path) != 0)
     {
@@ -381,8 +384,19 @@ int vm_setup(struct vm *vm, const struct vm_config *cfg)
         return -1;
     }
 
-    const char *cmdline = "console=ttyS0,115200 earlyprintk=serial,ttyS0,115200"
-                          " rdinit=/init nokaslr";
+    char guest_ip[32], host_ip[32];
+    tap_guest_ip_for_vm(vm->id, guest_ip, sizeof(guest_ip));
+    tap_host_ip_for_vm(vm->id, host_ip, sizeof(host_ip));
+
+    char cmdline[320];
+    snprintf(cmdline, sizeof(cmdline),
+             "console=ttyS0,115200 earlyprintk=serial,ttyS0,115200"
+             " rdinit=/init nokaslr"
+             " virtio_mmio.device=0x%x@0x%llx:%d"
+             " ip=%s::%s:255.255.255.0::eth0:off",
+             VIRTIO_NET_MMIO_SIZE, (unsigned long long)VIRTIO_NET_MMIO_BASE,
+             VIRTIO_NET_IRQ, guest_ip, host_ip);
+
     if (setup_boot_params(vm, cfg->kernel_path, cmdline, initrd_addr, initrd_size) != 0)
     {
         vm_cleanup(vm);

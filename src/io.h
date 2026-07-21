@@ -24,8 +24,10 @@ struct com1_device
 struct com1_device *com1_create(int vm_fd, const char *log_path);
 void com1_destroy(struct com1_device *dev);
 
-void handle_io(struct vcpu *vcpu);   // handle port I/O operations
-void handle_mmio(struct vcpu *vcpu); // handle memory-mapped I/O operations (guest touch non-allocated memory)
+// handle port I/O operations
+void handle_io(struct vcpu *vcpu);
+// handle memory-mapped I/O operations (guest touch guest physical address space not backed by RAM)
+void handle_mmio(struct vcpu *vcpu);
 
 // COM1 serial receive interface
 int com1_rx_avail(struct com1_device *dev);

@@ -6,6 +6,7 @@
 #include <stdatomic.h>
 
 struct com1_device;
+struct virtio_net_device;
 
 struct vm
 {
@@ -15,7 +16,8 @@ struct vm
     size_t mem_size;
 
     int id;
-    struct com1_device *com1; // per-VM UART device
+    struct com1_device *com1;      // per-VM UART device
+    struct virtio_net_device *net; // per-VM virtio-net device, NULL if net setup failed
     atomic_int stop_requested;
 };
 
@@ -55,6 +57,6 @@ int setup_boot_params(struct vm *vm, const char *bzimage_path,
 
 // Orchestrates vm_init + load_kernel_bzimage + load_initramfs +
 // setup_boot_params from a vm_config
-int vm_setup(struct vm *vm, const struct vm_config *cfg);
+int vm_setup(struct vm *vm, int id, const struct vm_config *cfg);
 
 #endif // VM_H
